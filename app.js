@@ -38,9 +38,9 @@ let db = {};
  */
 
 // TODO: erstat med din Supabase URL (uden bag/)
-const SUPABASE_URL = 'https://scghpqbmdzdgtbgzwrns.supabase.co';
+const SUPABASE_URL = 'https://YOUR_SUPABASE_URL.supabase.co';
 // TODO: erstat med din offentlige anonyme nøgle (anon key)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjZ2hwcWJtZHpkZ3RiZ3p3cm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMzg1MDEsImV4cCI6MjA3MTcxNDUwMX0.NZs0M1CTbjZZOO1L9a472dYfw3YfKgZl-DbLtroY2q8';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
 // Initialiser Supabase‑klient kun hvis bibliotekt er tilgængeligt og variablerne
 // ikke er efterladt som placeholders. Vi tjekker på 'YOUR_' for at afgøre
@@ -59,6 +59,12 @@ if (
 
 // Den aktuelle bruger efter login
 let currentUser = null;
+// Den virksomhed (company) som denne session arbejder på
+// For multi‑tenant support gemmer vi en company_id og rolle, som bruges til
+// at filtrere data og styre rettigheder. En bruger kan være medlem af flere
+// virksomheder (company_members table), men vælger én ad gangen.
+let currentCompanyId = null;
+let currentRole = null; // 'admin' eller 'employee'
 
 /**
  * Hent database fra Supabase for den aktuelle bruger. Hvis der findes data,
@@ -66,52 +72,235 @@ let currentUser = null;
  * localStorage (uden at trigge ny remote‑gemning). Hvis der ikke findes
  * nogen post for brugeren, oprettes en ny post med den nuværende lokale db.
  */
-async function loadRemoteDB() {
-  if (!supabaseClient || !currentUser) return;
+/**
+ * Hent database fra Supabase for den valgte virksomhed (currentCompanyId).
+ * Hvis der findes data, overskrives den lokale db (efter merge med defaultDB)
+ * og gemmes i localStorage (uden at trigge ny remote‑gemning). Hvis der
+ * ikke findes nogen post for virksomheden, oprettes en ny post med den
+ * nuværende lokale db. Denne funktion kaldes efter at brugeren har valgt
+ * virksomhed (loadMemberships → selectCompany).
+ */
+async function loadCompanyData() {
+  if (!supabaseClient || !currentUser || !currentCompanyId) return;
   try {
     const { data, error } = await supabaseClient
-      .from('eltimer_data')
+      .from('company_data')
       .select('data')
-      .eq('user_id', currentUser.id)
+      .eq('company_id', currentCompanyId)
       .maybeSingle();
     if (error) {
-      console.error('Fejl ved hentning af data fra database:', error);
+      console.error('Fejl ved hentning af company data:', error);
       return;
     }
     if (data && data.data) {
       try {
         const remote = JSON.parse(data.data);
         db = Object.assign({}, defaultDB, remote);
-        // Gem lokalt uden at trigge remote save
         saveDB(true);
       } catch (parseErr) {
-        console.error('Fejl ved parsing af remote data:', parseErr);
+        console.error('Fejl ved parsing af company data:', parseErr);
       }
     } else {
-      // Der findes ingen post for denne bruger, opret én
+      // Ingen post for denne virksomhed – opret én med den aktuelle db
       await supabaseClient
-        .from('eltimer_data')
-        .insert({ user_id: currentUser.id, data: JSON.stringify(db) });
+        .from('company_data')
+        .insert({ company_id: currentCompanyId, data: JSON.stringify(db) });
     }
   } catch (err) {
-    console.error('Uventet fejl i loadRemoteDB:', err);
+    console.error('Uventet fejl i loadCompanyData:', err);
   }
 }
 
 /**
- * Gem den aktuelle db til Supabase. Kaldes automatisk efter hver lokal
- * gemning hvis en bruger er logget ind. Hvis der opstår fejl, logges de
- * til konsollen. Der ventes ikke på at gemningen er færdig i UI.
+ * Gem den aktuelle db til Supabase for den valgte virksomhed. Kaldes
+ * automatisk efter hver lokal gemning hvis en bruger er logget ind og
+ * har valgt en virksomhed. Hvis der opstår fejl, logges de til
+ * konsollen. Der ventes ikke på at gemningen er færdig i UI.
  */
 async function saveRemoteDB() {
-  if (!supabaseClient || !currentUser) return;
+  if (!supabaseClient || !currentUser || !currentCompanyId) return;
   try {
     await supabaseClient
-      .from('eltimer_data')
-      .upsert({ user_id: currentUser.id, data: JSON.stringify(db) });
+      .from('company_data')
+      .upsert({ company_id: currentCompanyId, data: JSON.stringify(db) });
   } catch (err) {
-    console.error('Fejl ved gemning til database:', err);
+    console.error('Fejl ved gemning til company database:', err);
   }
+}
+
+/**
+ * Hent liste over virksomhedstilknytninger for den aktuelle bruger. Hvis
+ * brugeren ikke er medlem af nogen virksomheder, vises en formular til at
+ * oprette en ny virksomhed. Hvis brugeren er medlem af én virksomhed,
+ * vælges den automatisk. Hvis brugeren er medlem af flere virksomheder,
+ * vises en liste, så brugeren kan vælge. Efter valg indlæses company data.
+ */
+async function loadMemberships() {
+  if (!supabaseClient || !currentUser) return;
+  try {
+    // Hent memberships (company_id, role)
+    const { data: mems, error: memError } = await supabaseClient
+      .from('company_members')
+      .select('company_id, role')
+      .eq('user_id', currentUser.id);
+    if (memError) {
+      console.error('Fejl ved hentning af company memberships:', memError);
+      return;
+    }
+    if (!mems || mems.length === 0) {
+      // Ingen medlemskab → vis oprettelsesformular
+      showCompanyCreate();
+      return;
+    }
+    // Hent navne på virksomheder
+    const companyIds = mems.map(m => m.company_id);
+    const { data: comps, error: compError } = await supabaseClient
+      .from('companies')
+      .select('id, name')
+      .in('id', companyIds);
+    if (compError) {
+      console.error('Fejl ved hentning af company navne:', compError);
+      return;
+    }
+    // Sammenkobl navne med membership
+    const memberships = mems.map(m => {
+      const comp = comps ? comps.find(c => c.id === m.company_id) : null;
+      return {
+        id: m.company_id,
+        role: m.role,
+        name: comp ? comp.name : m.company_id
+      };
+    });
+    if (memberships.length === 1) {
+      // Automatisk valg
+      selectCompany(memberships[0].id, memberships[0].role);
+      return;
+    }
+    // Flere memberships → lad bruger vælge
+    showCompanySelection(memberships);
+  } catch (err) {
+    console.error('Uventet fejl i loadMemberships:', err);
+  }
+}
+
+/**
+ * Vælg en virksomhed og rolle. Sætter currentCompanyId og currentRole,
+ * henter company data og viser dashboard. Kaldes fra UI eller automatisk.
+ * @param {string} companyId
+ * @param {string} role
+ */
+function selectCompany(companyId, role) {
+  currentCompanyId = companyId;
+  currentRole = role;
+  loadDB();
+  loadCompanyData().then(() => {
+    // Vis navigation og log ud knap
+    const nav = document.querySelector('nav');
+    if (nav) nav.style.display = '';
+    const logoutBtn = document.getElementById('nav-logout');
+    if (logoutBtn) logoutBtn.style.display = '';
+    showDashboard();
+  });
+}
+
+/**
+ * Vis en formular hvor brugeren kan oprette en ny virksomhed. Når
+ * virksomheden er oprettet, tilføjes brugeren som admin og der
+ * oprettes en tom company_data post. Derefter indlæses company data.
+ */
+function showCompanyCreate() {
+  const nav = document.querySelector('nav');
+  if (nav) nav.style.display = 'none';
+  const view = document.getElementById('view');
+  view.innerHTML = `
+    <h2>Opret virksomhed</h2>
+    <form id="company-create-form">
+      <label>Virksomhedsnavn<br><input type="text" name="name" required></label><br>
+      <button type="submit">Opret virksomhed</button>
+    </form>
+  `;
+  const form = document.getElementById('company-create-form');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const name = data.get('name');
+    if (!supabaseClient) {
+      alert('Supabase er ikke konfigureret. Udfyld SUPABASE_URL og SUPABASE_ANON_KEY.');
+      return;
+    }
+    try {
+      // Indsæt i companies og få id
+      const { data: insertComp, error: compErr } = await supabaseClient
+        .from('companies')
+        .insert({ name })
+        .select('id')
+        .single();
+      if (compErr) {
+        alert('Kunne ikke oprette virksomhed: ' + compErr.message);
+        return;
+      }
+      const companyId = insertComp.id;
+      // Tilføj membership som admin
+      const { error: memErr } = await supabaseClient
+        .from('company_members')
+        .insert({ user_id: currentUser.id, company_id: companyId, role: 'admin' });
+      if (memErr) {
+        alert('Kunne ikke tilføje dig som medlem: ' + memErr.message);
+        return;
+      }
+      // Opret company_data post
+      const { error: dataErr } = await supabaseClient
+        .from('company_data')
+        .insert({ company_id: companyId, data: JSON.stringify(defaultDB) });
+      if (dataErr) {
+        alert('Kunne ikke oprette databasepost for virksomhed: ' + dataErr.message);
+        return;
+      }
+      // Vælg virksomheden
+      selectCompany(companyId, 'admin');
+    } catch (err) {
+      console.error('Fejl ved oprettelse af virksomhed:', err);
+      alert('Der opstod en uventet fejl ved oprettelse af virksomhed.');
+    }
+  });
+}
+
+/**
+ * Vis en side hvor brugeren kan vælge hvilken virksomhed der skal bruges.
+ * @param {Array<{id:string, role:string, name:string}>} memberships
+ */
+function showCompanySelection(memberships) {
+  const nav = document.querySelector('nav');
+  if (nav) nav.style.display = 'none';
+  const view = document.getElementById('view');
+  // Byg en select liste med virksomheder
+  let options = memberships.map(m => `<option value="${m.id}">${m.name} (${m.role})</option>`).join('');
+  view.innerHTML = `
+    <h2>Vælg virksomhed</h2>
+    <form id="select-company-form">
+      <label>Virksomhed<br>
+        <select name="company" required>
+          ${options}
+        </select>
+      </label><br>
+      <button type="submit">Vælg</button>
+    </form>
+    <p>Har du ikke en virksomhed? <a href="#" id="create-company-link">Opret en ny virksomhed</a></p>
+  `;
+  document.getElementById('create-company-link').addEventListener('click', e => {
+    e.preventDefault();
+    showCompanyCreate();
+  });
+  const form = document.getElementById('select-company-form');
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const select = form.querySelector('select[name="company"]');
+    const companyId = select.value;
+    // Find role
+    const membership = memberships.find(m => m.id === companyId);
+    const role = membership ? membership.role : 'employee';
+    selectCompany(companyId, role);
+  });
 }
 
 /**
@@ -190,14 +379,10 @@ async function handleLogin(email, password) {
       return;
     }
     currentUser = data.user;
+    // Indlæs lokal data som fallback
     loadDB();
-    await loadRemoteDB();
-    // Vis navigation og log ud knap
-    const nav = document.querySelector('nav');
-    if (nav) nav.style.display = '';
-    const logoutBtn = document.getElementById('nav-logout');
-    if (logoutBtn) logoutBtn.style.display = '';
-    showDashboard();
+    // Hent tilknyttede virksomheder og vælg en
+    await loadMemberships();
   } catch (err) {
     console.error('Login exception:', err);
     alert('Der opstod en uventet fejl ved login.');
@@ -220,14 +405,10 @@ async function handleSignUp(email, password) {
       return;
     }
     currentUser = data.user;
-    // Gem lokal db og opret remote post
+    // Indlæs lokal db som fallback
     loadDB();
-    await saveRemoteDB();
-    const nav = document.querySelector('nav');
-    if (nav) nav.style.display = '';
-    const logoutBtn = document.getElementById('nav-logout');
-    if (logoutBtn) logoutBtn.style.display = '';
-    showDashboard();
+    // Der findes ingen virksomhed endnu, fortsæt til medlemskabsflow
+    await loadMemberships();
   } catch (err) {
     console.error('Sign up exception:', err);
     alert('Der opstod en uventet fejl ved oprettelse.');
@@ -248,6 +429,8 @@ async function logout() {
     console.error('Logout exception:', err);
   }
   currentUser = null;
+  currentCompanyId = null;
+  currentRole = null;
   showLogin();
 }
 
@@ -338,12 +521,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const session = data ? data.session : null;
       if (session) {
         currentUser = session.user;
-        loadRemoteDB().then(() => {
-          // Vis navigation og log ud knap når remote data er klar
-          if (nav) nav.style.display = '';
-          if (logoutBtn) logoutBtn.style.display = '';
-          showDashboard();
-        });
+        // Indlæs lokal fallback
+        loadDB();
+        // Hent virksomhedsmedlemskaber og vælg virksomhed
+        loadMemberships();
       } else {
         // Ingen session → vis login
         showLogin();
@@ -368,7 +549,12 @@ function showDashboard() {
     <p>Du har <strong>${db.customers.length}</strong> kunder, <strong>${db.projects.length}</strong> sager, <strong>${db.times.length}</strong> timeregistreringer og <strong>${db.materials.length}</strong> materialer.</p>
   `;
   // Vis seneste 5 timeregistreringer
-  const times = db.times.slice().sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0,5);
+  // Hvis rollen er employee, vis kun brugerens egne timer
+  const times = db.times
+    .filter(t => currentRole === 'admin' || (currentUser && t.userId === currentUser.id))
+    .slice()
+    .sort((a,b) => new Date(b.date) - new Date(a.date))
+    .slice(0,5);
   if (times.length) {
     let html = '<h3>Seneste timeregistreringer</h3><table><thead><tr><th>Dato</th><th>Sag</th><th>Timer</th><th>Beskrivelse</th></tr></thead><tbody>';
     for (const t of times) {
@@ -385,62 +571,74 @@ function showDashboard() {
 function showCustomers() {
   const view = document.getElementById('view');
   view.innerHTML = '<h2>Kunder</h2>';
+  const canEdit = currentRole === 'admin';
   // liste
   if (db.customers.length) {
-    let html = '<table><thead><tr><th>Navn</th><th>Adresse</th><th>Email</th><th>Telefon</th><th></th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>Navn</th><th>Adresse</th><th>Email</th><th>Telefon</th>';
+    if (canEdit) html += '<th></th>';
+    html += '</tr></thead><tbody>';
     for (const c of db.customers) {
-      html += `<tr><td>${c.name}</td><td>${c.address || ''}</td><td>${c.email || ''}</td><td>${c.phone || ''}</td><td><button data-id="${c.id}" class="delete-customer">Slet</button></td></tr>`;
+      html += `<tr><td>${c.name}</td><td>${c.address || ''}</td><td>${c.email || ''}</td><td>${c.phone || ''}</td>`;
+      if (canEdit) html += `<td><button data-id="${c.id}" class="delete-customer">Slet</button></td>`;
+      html += '</tr>';
     }
     html += '</tbody></table>';
     view.innerHTML += html;
   } else {
     view.innerHTML += '<p>Ingen kunder endnu.</p>';
   }
-  // formular til ny kunde
-  const form = document.createElement('form');
-  form.innerHTML = `
-    <h3>Ny kunde</h3>
-    <label>Navn<br><input type="text" name="name" required></label><br>
-    <label>Adresse<br><input type="text" name="address"></label><br>
-    <label>Email<br><input type="email" name="email"></label><br>
-    <label>Telefon<br><input type="tel" name="phone"></label><br>
-    <button type="submit">Tilføj kunde</button>
-  `;
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    const data = new FormData(form);
-    db.customers.push({
-      id: generateId(),
-      name: data.get('name'),
-      address: data.get('address'),
-      email: data.get('email'),
-      phone: data.get('phone')
-    });
-    saveDB();
-    showCustomers();
-  });
-  view.appendChild(form);
-  // sletteknapper
-  view.querySelectorAll('.delete-customer').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const id = btn.getAttribute('data-id');
-      // fjern projekter og registreringer tilknyttet kunden
-      db.projects = db.projects.filter(p => p.customerId !== id);
-      db.times = db.times.filter(t => findProject(t.projectId));
-      db.materials = db.materials.filter(m => findProject(m.projectId));
-      db.customers = db.customers.filter(c => c.id !== id);
+  // formular til ny kunde (kun admin)
+  if (canEdit) {
+    const form = document.createElement('form');
+    form.innerHTML = `
+      <h3>Ny kunde</h3>
+      <label>Navn<br><input type="text" name="name" required></label><br>
+      <label>Adresse<br><input type="text" name="address"></label><br>
+      <label>Email<br><input type="email" name="email"></label><br>
+      <label>Telefon<br><input type="tel" name="phone"></label><br>
+      <button type="submit">Tilføj kunde</button>
+    `;
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const data = new FormData(form);
+      db.customers.push({
+        id: generateId(),
+        name: data.get('name'),
+        address: data.get('address'),
+        email: data.get('email'),
+        phone: data.get('phone')
+      });
       saveDB();
       showCustomers();
     });
-  });
+    view.appendChild(form);
+  }
+  // sletteknapper (kun admin)
+  if (canEdit) {
+    view.querySelectorAll('.delete-customer').forEach(btn => {
+      btn.addEventListener('click', e => {
+        const id = btn.getAttribute('data-id');
+        // fjern projekter og registreringer tilknyttet kunden
+        db.projects = db.projects.filter(p => p.customerId !== id);
+        db.times = db.times.filter(t => findProject(t.projectId));
+        db.materials = db.materials.filter(m => findProject(m.projectId));
+        db.customers = db.customers.filter(c => c.id !== id);
+        saveDB();
+        showCustomers();
+      });
+    });
+  }
 }
 
 // Sager: liste + formular
 function showProjects() {
   const view = document.getElementById('view');
   view.innerHTML = '<h2>Sager</h2>';
+  const canEdit = currentRole === 'admin';
   if (db.projects.length) {
-    let html = '<table><thead><tr><th>Kunde</th><th>Titel</th><th>Timepris</th><th>Status</th><th>Handling</th><th></th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>Kunde</th><th>Titel</th><th>Timepris</th><th>Status</th><th>Handling</th>';
+    if (canEdit) html += '<th></th>';
+    html += '</tr></thead><tbody>';
     for (const p of db.projects) {
       const cust = findCustomer(p.customerId);
       // Knappen til at afslutte eller genåbne sag.
@@ -451,50 +649,56 @@ function showProjects() {
       } else {
         actionBtn = `<button data-id="${p.id}" class="reopen-project">Åbn igen</button>`;
       }
-      html += `<tr><td>${cust ? cust.name : ''}</td><td>${p.title}</td><td>${p.hourPrice}</td><td>${p.status}</td><td>${actionBtn}</td><td><button data-id="${p.id}" class="delete-project">Slet</button></td></tr>`;
+      html += `<tr><td>${cust ? cust.name : ''}</td><td>${p.title}</td><td>${p.hourPrice}</td><td>${p.status}</td><td>${actionBtn}</td>`;
+      if (canEdit) html += `<td><button data-id="${p.id}" class="delete-project">Slet</button></td>`;
+      html += '</tr>';
     }
     html += '</tbody></table>';
     view.innerHTML += html;
   } else {
     view.innerHTML += '<p>Ingen sager endnu.</p>';
   }
-  // formular til ny sag
-  const form = document.createElement('form');
-  form.innerHTML = `
-    <h3>Ny sag</h3>
-    <label>Kunde<br><select name="customerId" required>${customerOptions()}</select></label><br>
-    <label>Titel<br><input type="text" name="title" required></label><br>
-    <label>Beskrivelse<br><textarea name="description"></textarea></label><br>
-    <label>Timepris<br><input type="number" name="hourPrice" step="0.01" value="${db.settings.defaultHourPrice || ''}"></label><br>
-    <button type="submit">Tilføj sag</button>
-  `;
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    const data = new FormData(form);
-    db.projects.push({
-      id: generateId(),
-      customerId: data.get('customerId'),
-      title: data.get('title'),
-      description: data.get('description'),
-      hourPrice: parseFloat(data.get('hourPrice')) || 0,
-      status: 'open' // nye sager starter som åbne
-    });
-    saveDB();
-    showProjects();
-  });
-  view.appendChild(form);
-  // slet sag
-  view.querySelectorAll('.delete-project').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const id = btn.getAttribute('data-id');
-      db.projects = db.projects.filter(p => p.id !== id);
-      db.times = db.times.filter(t => t.projectId !== id);
-      db.materials = db.materials.filter(m => m.projectId !== id);
+  // formular til ny sag (kun admin)
+  if (canEdit) {
+    const form = document.createElement('form');
+    form.innerHTML = `
+      <h3>Ny sag</h3>
+      <label>Kunde<br><select name="customerId" required>${customerOptions()}</select></label><br>
+      <label>Titel<br><input type="text" name="title" required></label><br>
+      <label>Beskrivelse<br><textarea name="description"></textarea></label><br>
+      <label>Timepris<br><input type="number" name="hourPrice" step="0.01" value="${db.settings.defaultHourPrice || ''}"></label><br>
+      <button type="submit">Tilføj sag</button>
+    `;
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const data = new FormData(form);
+      db.projects.push({
+        id: generateId(),
+        customerId: data.get('customerId'),
+        title: data.get('title'),
+        description: data.get('description'),
+        hourPrice: parseFloat(data.get('hourPrice')) || 0,
+        status: 'open' // nye sager starter som åbne
+      });
       saveDB();
       showProjects();
     });
-  });
-  // Afslut sag knapper
+    view.appendChild(form);
+  }
+  // slet sag (kun admin)
+  if (canEdit) {
+    view.querySelectorAll('.delete-project').forEach(btn => {
+      btn.addEventListener('click', e => {
+        const id = btn.getAttribute('data-id');
+        db.projects = db.projects.filter(p => p.id !== id);
+        db.times = db.times.filter(t => t.projectId !== id);
+        db.materials = db.materials.filter(m => m.projectId !== id);
+        saveDB();
+        showProjects();
+      });
+    });
+  }
+  // Afslut sag knapper (for både admin og employee)
   view.querySelectorAll('.finish-project').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
@@ -506,7 +710,7 @@ function showProjects() {
       }
     });
   });
-  // Genåbn sag knapper
+  // Genåbn sag knapper (for både admin og employee)
   view.querySelectorAll('.reopen-project').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
@@ -572,7 +776,9 @@ function showTimes() {
         end: end,
         breakMinutes: breakMin,
         hours: hours,
-        description: data.get('description')
+        description: data.get('description'),
+        // Gem brugerens ID så vi kan filtrere på medarbejdere senere
+        userId: currentUser ? currentUser.id : null
       });
       saveDB();
       showTimes();
@@ -881,7 +1087,16 @@ function generateReport(customerIds, startDate, endDate) {
     for (const p of projects) {
       html += `<h4>${p.title}</h4>`;
       // Saml timer for perioden
-      const times = db.times.filter(t => t.projectId === p.id && t.date);
+      // Hvis brugeren ikke er admin, begræns til egne timeregistreringer
+      const times = db.times.filter(t => {
+        if (!t.date) return false;
+        if (t.projectId !== p.id) return false;
+        // ansatte ser kun egne timer
+        if (currentRole !== 'admin' && currentUser) {
+          return t.userId === currentUser.id;
+        }
+        return true;
+      });
       const filteredTimes = times.filter(t => {
         const d = new Date(t.date);
         return d >= start && d <= end;
