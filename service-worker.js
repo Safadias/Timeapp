@@ -1,5 +1,6 @@
 // Enkel service worker til at cache filer for offline brug
-const CACHE_NAME = 'eltimer-cache-v1';
+// Bump cache version to force service worker update when deploying new version
+const CACHE_NAME = 'eltimer-cache-v2';
 const ASSETS = [
   './',
   'index.html',
