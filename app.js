@@ -38,9 +38,9 @@ let db = {};
  */
 
 // TODO: erstat med din Supabase URL (uden bag/)
-const SUPABASE_URL = 'https://scghpqbmdzdgtbgzwrns.supabase.co';
+const SUPABASE_URL = 'https://YOUR_SUPABASE_URL.supabase.co';
 // TODO: erstat med din offentlige anonyme nøgle (anon key)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjZ2hwcWJtZHpkZ3RiZ3p3cm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMzg1MDEsImV4cCI6MjA3MTcxNDUwMX0.NZs0M1CTbjZZOO1L9a472dYfw3YfKgZl-DbLtroY2q8';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
 // Initialiser Supabase‑klient kun hvis bibliotekt er tilgængeligt og variablerne
 // ikke er efterladt som placeholders. Vi tjekker på 'YOUR_' for at afgøre
