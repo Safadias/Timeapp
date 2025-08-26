@@ -38,9 +38,9 @@ let db = {};
  */
 
 // TODO: erstat med din Supabase URL (uden bag/)
-const SUPABASE_URL = 'https://scghpqbmdzdgtbgzwrns.supabase.co';
+const SUPABASE_URL = 'https://YOUR_SUPABASE_URL.supabase.co';
 // TODO: erstat med din offentlige anonyme nøgle (anon key)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjZ2hwcWJtZHpkZ3RiZ3p3cm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMzg1MDEsImV4cCI6MjA3MTcxNDUwMX0.NZs0M1CTbjZZOO1L9a472dYfw3YfKgZl-DbLtroY2q8';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
 // Initialiser Supabase‑klient kun hvis bibliotekt er tilgængeligt og variablerne
 // ikke er efterladt som placeholders. Vi tjekker på 'YOUR_' for at afgøre
@@ -145,6 +145,9 @@ async function loadMemberships() {
       .eq('user_id', currentUser.id);
     if (memError) {
       console.error('Fejl ved hentning af company memberships:', memError);
+      // Hvis der opstår en fejl, vis en alert og antag at der ikke er medlemskab endnu
+      alert('Kunne ikke hente medlemskaber: ' + memError.message + '\nDu bliver nu bedt om at oprette en virksomhed.');
+      showCompanyCreate();
       return;
     }
     if (!mems || mems.length === 0) {
@@ -312,10 +315,11 @@ function showLogin() {
   const nav = document.querySelector('nav');
   if (nav) nav.style.display = 'none';
   const view = document.getElementById('view');
+  // Tillad login med email ELLER telefonnummer. Vi bruger type="text" for at acceptere begge dele.
   view.innerHTML = `
     <h2>Log ind</h2>
     <form id="login-form">
-      <label>Email<br><input type="email" name="email" required></label><br>
+      <label>Email eller telefon<br><input type="text" name="identifier" required></label><br>
       <label>Adgangskode<br><input type="password" name="password" required></label><br>
       <button type="submit">Log ind</button>
     </form>
@@ -325,7 +329,7 @@ function showLogin() {
   loginForm.addEventListener('submit', async e => {
     e.preventDefault();
     const data = new FormData(loginForm);
-    await handleLogin(data.get('email'), data.get('password'));
+    await handleLogin(data.get('identifier'), data.get('password'));
   });
   const signupLink = document.getElementById('show-signup');
   signupLink.addEventListener('click', e => {
@@ -342,10 +346,11 @@ function showSignup() {
   const nav = document.querySelector('nav');
   if (nav) nav.style.display = 'none';
   const view = document.getElementById('view');
+  // Tillad oprettelse med email ELLER telefonnummer
   view.innerHTML = `
     <h2>Opret konto</h2>
     <form id="signup-form">
-      <label>Email<br><input type="email" name="email" required></label><br>
+      <label>Email eller telefon<br><input type="text" name="identifier" required></label><br>
       <label>Adgangskode<br><input type="password" name="password" required></label><br>
       <button type="submit">Opret</button>
     </form>
@@ -355,7 +360,7 @@ function showSignup() {
   signupForm.addEventListener('submit', async e => {
     e.preventDefault();
     const data = new FormData(signupForm);
-    await handleSignUp(data.get('email'), data.get('password'));
+    await handleSignUp(data.get('identifier'), data.get('password'));
   });
   document.getElementById('show-login').addEventListener('click', e => {
     e.preventDefault();
@@ -367,13 +372,20 @@ function showSignup() {
  * Log bruger ind via Supabase. Ved succes hentes data fra lokal storage og
  * Supabase og navigationsbjælken vises. Ved fejl vises en alert.
  */
-async function handleLogin(email, password) {
+async function handleLogin(identifier, password) {
+  // Tillad login med email eller telefon. Hvis identifier indeholder '@', antager vi at det er en email; ellers telefon.
   if (!supabaseClient) {
     alert('Supabase er ikke konfigureret. Udfyld SUPABASE_URL og SUPABASE_ANON_KEY.');
     return;
   }
   try {
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    const credentials = { password };
+    if (identifier.includes('@')) {
+      credentials.email = identifier;
+    } else {
+      credentials.phone = identifier;
+    }
+    const { data, error } = await supabaseClient.auth.signInWithPassword(credentials);
     if (error) {
       alert('Login fejlede: ' + error.message);
       return;
@@ -393,13 +405,20 @@ async function handleLogin(email, password) {
  * Opret en ny bruger via Supabase. Ved succes logges brugeren ind og der
  * oprettes en databasepost i Supabase med den aktuelle lokale db.
  */
-async function handleSignUp(email, password) {
+async function handleSignUp(identifier, password) {
+  // Tillad oprettelse med email eller telefon
   if (!supabaseClient) {
     alert('Supabase er ikke konfigureret. Udfyld SUPABASE_URL og SUPABASE_ANON_KEY.');
     return;
   }
   try {
-    const { data, error } = await supabaseClient.auth.signUp({ email, password });
+    const credentials = { password };
+    if (identifier.includes('@')) {
+      credentials.email = identifier;
+    } else {
+      credentials.phone = identifier;
+    }
+    const { data, error } = await supabaseClient.auth.signUp(credentials);
     if (error) {
       alert('Oprettelse fejlede: ' + error.message);
       return;
