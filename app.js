@@ -38,9 +38,9 @@ let db = {};
  */
 
 // TODO: erstat med din Supabase URL (uden bag/)
-const SUPABASE_URL = 'https://scghpqbmdzdgtbgzwrns.supabase.co';
+const SUPABASE_URL = 'https://YOUR_SUPABASE_URL.supabase.co';
 // TODO: erstat med din offentlige anonyme nøgle (anon key)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjZ2hwcWJtZHpkZ3RiZ3p3cm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxMzg1MDEsImV4cCI6MjA3MTcxNDUwMX0.NZs0M1CTbjZZOO1L9a472dYfw3YfKgZl-DbLtroY2q8';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
 // Initialiser Supabase‑klient kun hvis bibliotekt er tilgængeligt og variablerne
 // ikke er efterladt som placeholders. Vi tjekker på 'YOUR_' for at afgøre
@@ -195,6 +195,15 @@ async function loadMemberships() {
 function selectCompany(companyId, role) {
   currentCompanyId = companyId;
   currentRole = role;
+  // Vis eller skjul knap til at tilføje medarbejder afhængigt af rolle
+  const addMemberBtn = document.getElementById('nav-add-member');
+  if (addMemberBtn) {
+    if (role === 'admin') {
+      addMemberBtn.style.display = '';
+    } else {
+      addMemberBtn.style.display = 'none';
+    }
+  }
   loadDB();
   loadCompanyData().then(() => {
     // Vis navigation og log ud knap
@@ -528,6 +537,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const reportBtn = document.getElementById('nav-report');
   if (reportBtn) reportBtn.addEventListener('click', showReport);
   document.getElementById('nav-settings').addEventListener('click', showSettings);
+  // Event handler til at tilføje medarbejder. Knap vises kun for administratorer
+  const addMemberBtn = document.getElementById('nav-add-member');
+  if (addMemberBtn) {
+    addMemberBtn.addEventListener('click', showAddMember);
+  }
   // Tilføj logout event
   const logoutBtn = document.getElementById('nav-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', () => { logout(); });
@@ -1039,6 +1053,61 @@ function showSettings() {
       }
     };
     reader.readAsText(file);
+  });
+}
+
+/**
+ * Vis formular til at tilføje en medarbejder til den aktuelle virksomhed.
+ * Kun synlig og tilgængelig for administratorer (currentRole === 'admin').
+ */
+function showAddMember() {
+  if (!currentCompanyId || currentRole !== 'admin') {
+    alert('Du har ikke rettigheder til at tilføje medarbejdere.');
+    return;
+  }
+  const view = document.getElementById('view');
+  view.innerHTML = `
+    <h2>Tilføj medarbejder</h2>
+    <p>Indtast brugerens ID (UUID) og vælg rolle. Brugeren skal allerede have en konto i systemet.</p>
+    <form id="add-member-form">
+      <label>Bruger‑ID<br><input type="text" name="user" required placeholder="UUID"></label><br>
+      <label>Rolle<br>
+        <select name="role">
+          <option value="employee">Medarbejder</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label><br>
+      <button type="submit">Tilføj</button>
+    </form>
+  `;
+  const form = document.getElementById('add-member-form');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const userId = data.get('user');
+    const role = data.get('role') || 'employee';
+    if (!supabaseClient) {
+      alert('Supabase er ikke konfigureret.');
+      return;
+    }
+    if (!currentCompanyId) {
+      alert('Der er ikke valgt nogen virksomhed.');
+      return;
+    }
+    try {
+      const { error } = await supabaseClient
+        .from('company_members')
+        .insert({ user_id: userId, company_id: currentCompanyId, role });
+      if (error) {
+        alert('Kunne ikke tilføje medarbejder: ' + error.message);
+      } else {
+        alert('Medarbejderen blev tilføjet!');
+        // Opdater memberships og eventuel visning (valgfrit)
+      }
+    } catch (err) {
+      console.error('Fejl ved tilføjelse af medarbejder:', err);
+      alert('Der opstod en uventet fejl.');
+    }
   });
 }
 
